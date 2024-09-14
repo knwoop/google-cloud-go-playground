@@ -20,8 +20,8 @@ func main() {
 
 	// Location in which to list key rings.
 	locationID := "global"
-	keyRingID := "jwt-key-ring"
-	keyID := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	keyRingID := "my-token-ring"
+	keyID := time.Now().Format("2006-01-02")
 
 	// Create the client.
 	ctx := context.Background()

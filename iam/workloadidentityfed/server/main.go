@@ -179,9 +179,7 @@ type TokenResponse struct {
 }
 
 func (s *Server) Token(w http.ResponseWriter, r *http.Request) {
-	//aud := fmt.Sprintf("https://iam.googleapis.com/%s", s.env.WorkloadIdentityFederationPoolID)
-	aud := "//iam.googleapis.com/projects/415279311334/locations/global/workloadIdentityPools/example-pool/providers/example-app-provider"
-	token, err := generateIDToken(aud, s.env.WorkloadIdentityFederationServiceAccount, s.env.WorkloadIdentityFederationIssuerURL)
+	token, err := generateIDToken(s.env.WorkloadIdentityFederationAUD, s.env.WorkloadIdentityFederationServiceAccount, s.env.WorkloadIdentityFederationIssuerURL)
 	if err != nil {
 		fmt.Printf("internal error: %w", err)
 		w.WriteHeader(http.StatusInternalServerError)

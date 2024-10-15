@@ -7,7 +7,11 @@ import (
 )
 
 type Environments struct {
-	GoogleCloudProjectID string `envconfig:"GOOGLE_CLOUD_PROJECT_ID" required:"true"`
+	GoogleCloudProjectID                     string `envconfig:"GOOGLE_CLOUD_PROJECT_ID" required:"true"`
+	WorkloadIdentityFederationServiceAccount string `envconfig:"WORKLOAD_IDENTITY_FEDERATION_SERVICE_ACCOUNT"`
+	WorkloadIdentityFederationIssuerURL      string `envconfig:"WORKLOAD_IDENTITY_FEDERATION_ISSUER_URL"`
+	WorkloadIdentityFederationPoolID         string `envconfig:"WORKLOAD_IDENTITY_FEDERATION_POOL_ID"`
+	WorkloadIdentityFederationAUD            string `envconfig:"WORKLOAD_IDENTITY_FEDERATION_AUD"`
 }
 
 func LoadEnvironments() (*Environments, error) {

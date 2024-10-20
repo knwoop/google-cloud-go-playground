@@ -45,7 +45,7 @@ $ gcloud iam workload-identity-pools providers create-oidc "example-app-provider
   --workload-identity-pool="example-pool" \
   --display-name="example app provider" \
   --attribute-mapping="google.subject=assertion.sub" \
-  --issuer-uri="https://8d8e-2400-2410-a0a0-6f00-4cbf-37b7-d7f7-2b0.ngrok-free.app"
+  --issuer-uri="${WORKLOAD_IDENTITY_FEDERATION_ISSUER_URL}"
 ```
 
 4. store pool id
@@ -64,7 +64,7 @@ set the pool id to WORKLOAD_IDENTITY_POOL_ID in [.envrc](.envrc)
 $ gcloud iam service-accounts add-iam-policy-binding "example-sa@${GOOGLE_CLOUD_PROJECT}.iam.gserviceaccount.com" \
   --project="${GOOGLE_CLOUD_PROJECT}" \
   --role="roles/iam.workloadIdentityUser" \
-  --member="principal://iam.googleapis.com/${WORKLOAD_IDENTITY_POOL_ID}/subject/SUBJECT_ATTRIBUTE_VALUE"
+  --member="principal://iam.googleapis.com/${WORKLOAD_IDENTITY_FEDERATION_POOL_ID}/subject/example-sa@${GOOGLE_CLOUD_PROJECT}.iam.gserviceaccount.com"
 ```
 
 ### Note

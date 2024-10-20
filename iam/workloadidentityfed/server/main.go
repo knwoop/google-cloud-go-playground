@@ -6,6 +6,8 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"cloud.google.com/go/storage"
@@ -25,30 +28,21 @@ import (
 	"golang.org/x/oauth2"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 var (
 	port = flag.Int("port", 8081, "The server port")
 	host = flag.String("host", "localhost", "host name")
 
-	publicKey  ecdsa.PublicKey
-	privateKey ecdsa.PrivateKey
+	publicKey  *ecdsa.PublicKey
+	privateKey *ecdsa.PrivateKey
 )
 
 const (
 	tokenEndpoint = "https://sts.googleapis.com/v1/token"
 )
-
-func init() {
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		fmt.Printf("Failed to generate private key: %v\n", err)
-		return
-	}
-
-	publicKey = priv.PublicKey
-	privateKey = *priv
-}
 
 func main() {
 	flag.CommandLine.SetOutput(os.Stdout)
@@ -67,6 +61,10 @@ func serve(ctx context.Context, port int) error {
 	e, err := env.LoadEnvironments()
 	if err != nil {
 		return fmt.Errorf("failed load envs: %w", err)
+	}
+
+	if err := loadOrCreateKeys(); err != nil {
+		return fmt.Errorf("failed pub/priv keys: %w", err)
 	}
 
 	s := NewServer(port, e)
@@ -188,7 +186,11 @@ func (s *Server) listGCSBuckets(w http.ResponseWriter, r *http.Request) {
 
 	client, err := storage.NewClient(r.Context(), option.WithTokenSource(
 		oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token}),
-	))
+	),
+		option.WithGRPCDialOption(grpc.WithTransportCredentials(insecure.NewCredentials())),
+		option.WithGRPCConnectionPool(1),
+		option.WithGRPCDialOption(grpc.WithBlock()),
+	)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to create storage client: %v", err), http.StatusInternalServerError)
 		return
@@ -196,7 +198,7 @@ func (s *Server) listGCSBuckets(w http.ResponseWriter, r *http.Request) {
 	defer client.Close()
 
 	var buckets []string
-	it := client.Buckets(r.Context(), s.env.GoogleCloudProjectID)
+	it := client.Buckets(r.Context(), s.env.GoogleCloudProject)
 	for {
 		bucketAttrs, err := it.Next()
 		if err == iterator.Done {
@@ -225,6 +227,16 @@ func (s *Server) getToken() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to generate id token: %w", err)
 	}
+
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		log.Printf("Invalid token format")
+		return "", fmt.Errorf("Invalid token format")
+	}
+	decodedHeader, _ := base64.RawURLEncoding.DecodeString(parts[0])
+	decodedPayload, _ := base64.RawURLEncoding.DecodeString(parts[1])
+	log.Printf("Token Header: %s", string(decodedHeader))
+	log.Printf("Token Payload: %s", string(decodedPayload))
 
 	googleToken, err := exchangeToken(s.httpClient, s.env.WorkloadIdentityFederationAUD, token)
 	if err != nil {
@@ -273,12 +285,12 @@ func generateIDToken(aud, serviceAccount, issuer string) (string, error) {
 
 func exchangeToken(httpClient *http.Client, aud, idToken string) (string, error) {
 	body := map[string]string{
-		"grantType":          "urn:ietf:params:oauth:grant-type:token-exchange",
-		"audience":           aud,
-		"scope":              "https://www.googleapis.com/auth/cloud-platform",
-		"requestedTokenType": "urn:ietf:params:oauth:token-type:access_token",
-		"subjectToken":       idToken,
-		"subjectTokenType":   "urn:ietf:params:oauth:token-type:jwt",
+		"grant_type":           "urn:ietf:params:oauth:grant-type:token-exchange",
+		"audience":             aud,
+		"scope":                "https://www.googleapis.com/auth/cloud-platform",
+		"requested_token_type": "urn:ietf:params:oauth:token-type:access_token",
+		"subject_token":        idToken,
+		"subject_token_type":   "urn:ietf:params:oauth:token-type:jwt",
 	}
 
 	jsonBody, err := json.Marshal(body)
@@ -313,5 +325,86 @@ func exchangeToken(httpClient *http.Client, aud, idToken string) (string, error)
 		return "", fmt.Errorf("successfully called %s, but the result was empty", tokenEndpoint)
 	}
 
+	fmt.Printf("result.AccessToken: %v\n", result.AccessToken)
+
 	return result.AccessToken, nil
+}
+
+func validateToken(token string) (map[string]interface{}, error) {
+	resp, err := http.Get("https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=" + token)
+	if err != nil {
+		return nil, fmt.Errorf("failed to validate token: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode token info: %v", err)
+	}
+
+	return result, nil
+}
+
+func loadOrCreateKeys() error {
+	// File paths for the keys
+	privKeyPath := "private.pem"
+	pubKeyPath := "public.pem"
+
+	// Try to read the private key
+	privKeyData, err := os.ReadFile(privKeyPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// If the private key does not exist, generate a new one
+			fmt.Println("Private key does not exist. Generating a new one.")
+			privateKey, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			if err != nil {
+				return fmt.Errorf("failed to generate private key: %v", err)
+			}
+
+			// Save the private key
+			privKeyBytes, err := x509.MarshalECPrivateKey(privateKey)
+			if err != nil {
+				return fmt.Errorf("failed to encode private key: %v", err)
+			}
+			err = os.WriteFile(privKeyPath, privKeyBytes, 0600)
+			if err != nil {
+				return fmt.Errorf("failed to save private key: %v", err)
+			}
+
+			// Save the public key
+			pubKeyBytes, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+			if err != nil {
+				return fmt.Errorf("failed to encode public key: %v", err)
+			}
+			err = os.WriteFile(pubKeyPath, pubKeyBytes, 0644)
+			if err != nil {
+				return fmt.Errorf("failed to save public key: %v", err)
+			}
+		} else {
+			return fmt.Errorf("failed to read private key: %v", err)
+		}
+	} else {
+		// Parse the private key
+		privateKey, err = x509.ParseECPrivateKey(privKeyData)
+		if err != nil {
+			return fmt.Errorf("failed to parse private key: %v", err)
+		}
+	}
+
+	// Read and parse the public key
+	pubKeyData, err := os.ReadFile(pubKeyPath)
+	if err != nil {
+		return fmt.Errorf("failed to read public key: %v", err)
+	}
+	pubKeyInterface, err := x509.ParsePKIXPublicKey(pubKeyData)
+	if err != nil {
+		return fmt.Errorf("failed to parse public key: %v", err)
+	}
+	var ok bool
+	publicKey, ok = pubKeyInterface.(*ecdsa.PublicKey)
+	if !ok {
+		return fmt.Errorf("public key is not of type *ecdsa.PublicKey")
+	}
+
+	return nil
 }

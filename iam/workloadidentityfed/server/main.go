@@ -7,6 +7,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
@@ -28,8 +29,6 @@ import (
 	"golang.org/x/oauth2"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 var (
@@ -177,6 +176,18 @@ func (s *Server) jwks(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+//go:embed credentials/service-account.json
+var serviceAccountJSON []byte
+
+func decodeAccessToken(token string) {
+	// トークンの最初の . までの部分を取得
+	parts := strings.Split(token, ".")
+	if len(parts) > 1 {
+		decoded, _ := base64.RawURLEncoding.DecodeString(parts[1])
+		log.Printf("Access Token Payload: %s", string(decoded))
+	}
+}
+
 func (s *Server) listGCSBuckets(w http.ResponseWriter, r *http.Request) {
 	token, err := s.getToken()
 	if err != nil {
@@ -185,16 +196,18 @@ func (s *Server) listGCSBuckets(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client, err := storage.NewClient(r.Context(), option.WithTokenSource(
-		oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token}),
+		oauth2.StaticTokenSource(&oauth2.Token{
+			AccessToken: token,
+			TokenType:   "Bearer",
+		}),
 	),
-		option.WithGRPCDialOption(grpc.WithTransportCredentials(insecure.NewCredentials())),
-		option.WithGRPCConnectionPool(1),
-		option.WithGRPCDialOption(grpc.WithBlock()),
-	)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create storage client: %v", err), http.StatusInternalServerError)
-		return
-	}
+		option.WithScopes(storage.ScopeReadOnly))
+
+	// client, err := storage.NewClient(r.Context(), option.WithCredentialsJSON(serviceAccountJSON))
+	// if err != nil {
+	// 	http.Error(w, fmt.Sprintf("Failed to create storage client: %v", err), http.StatusInternalServerError)
+	// 	return
+	// }
 	defer client.Close()
 
 	var buckets []string
@@ -233,17 +246,18 @@ func (s *Server) getToken() (string, error) {
 		log.Printf("Invalid token format")
 		return "", fmt.Errorf("Invalid token format")
 	}
-	decodedHeader, _ := base64.RawURLEncoding.DecodeString(parts[0])
-	decodedPayload, _ := base64.RawURLEncoding.DecodeString(parts[1])
-	log.Printf("Token Header: %s", string(decodedHeader))
-	log.Printf("Token Payload: %s", string(decodedPayload))
 
 	googleToken, err := exchangeToken(s.httpClient, s.env.WorkloadIdentityFederationAUD, token)
 	if err != nil {
 		return "", fmt.Errorf("failed to exchange id token for google cloud access token: %w", err)
 	}
 
-	return googleToken, nil
+	saToken, err := generateServiceAccountToken(s.httpClient, googleToken, s.env.WorkloadIdentityFederationServiceAccount)
+	if err != nil {
+		return "", fmt.Errorf("failed to get service account token for google cloud access token: %w", err)
+	}
+
+	return saToken, nil
 }
 
 func generateIDToken(aud, serviceAccount, issuer string) (string, error) {
@@ -293,6 +307,7 @@ func exchangeToken(httpClient *http.Client, aud, idToken string) (string, error)
 		"subject_token_type":   "urn:ietf:params:oauth:token-type:jwt",
 	}
 
+	// リクエストの内容をログ
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal request body: %v", err)
@@ -311,38 +326,84 @@ func exchangeToken(httpClient *http.Client, aud, idToken string) (string, error)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("failed to call %s: HTTP %d: %s", tokenEndpoint, resp.StatusCode, string(bodyBytes))
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("STS exchange failed: %s", string(respBody))
 	}
 
-	var result TokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("failed to decode response: %v", err)
+	var result struct {
+		AccessToken     string `json:"access_token"`
+		IssuedTokenType string `json:"issued_token_type"`
+		TokenType       string `json:"token_type"`
+		ExpiresIn       int    `json:"expires_in"`
 	}
 
-	if result.AccessToken == "" {
-		return "", fmt.Errorf("successfully called %s, but the result was empty", tokenEndpoint)
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("failed to parse STS response: %v", err)
 	}
-
-	fmt.Printf("result.AccessToken: %v\n", result.AccessToken)
 
 	return result.AccessToken, nil
 }
 
-func validateToken(token string) (map[string]interface{}, error) {
-	resp, err := http.Get("https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=" + token)
+func checkEnvironment() {
+	envVars := []string{
+		"GOOGLE_CLOUD_PROJECT",
+		"GCLOUD_PROJECT",
+		"CLOUDSDK_CORE_PROJECT",
+		"GOOGLE_APPLICATION_CREDENTIALS",
+		"CLOUDSDK_API_ENDPOINT_OVERRIDES_STORAGE",
+	}
+
+	for _, env := range envVars {
+		if value := os.Getenv(env); value != "" {
+			log.Printf("Environment variable %s is set to: %s", env, value)
+		}
+	}
+}
+
+func generateServiceAccountToken(client *http.Client, fedToken, serviceAccount string) (string, error) {
+	url := fmt.Sprintf("https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/%s:generateAccessToken",
+		serviceAccount)
+
+	body := map[string]interface{}{
+		"scope":    []string{"https://www.googleapis.com/auth/cloud-platform"},
+		"lifetime": "3600s",
+	}
+
+	jsonBody, err := json.Marshal(body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to validate token: %v", err)
+		return "", err
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+fedToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
 	}
 	defer resp.Body.Close()
 
-	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode token info: %v", err)
+	var result struct {
+		AccessToken string `json:"accessToken"`
 	}
 
-	return result, nil
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("failed to generate access token: HTTP %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("failed to new a json decoder: %w", err)
+	}
+
+	return result.AccessToken, nil
 }
 
 func loadOrCreateKeys() error {

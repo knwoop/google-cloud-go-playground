@@ -1,3 +1,4 @@
 .envrc
 private.pem
 public.pem
+**/credentials

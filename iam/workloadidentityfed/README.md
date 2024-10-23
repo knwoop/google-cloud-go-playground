@@ -28,6 +28,10 @@ $ gcloud iam service-accounts create example-sa \
 $ gcloud projects add-iam-policy-binding "${GOOGLE_CLOUD_PROJECT}" \
   --member="serviceAccount:example-sa@${GOOGLE_CLOUD_PROJECT}.iam.gserviceaccount.com" \
   --role="roles/owner"
+
+$ gcloud projects add-iam-policy-binding "${GOOGLE_CLOUD_PROJECT}" \
+  --role="roles/storage.objectViewer" \
+ --member="principal://iam.googleapis.com/${WORKLOAD_IDENTITY_FEDERATION_POOL_ID}/subject/example-sa@${GOOGLE_CLOUD_PROJECT}.iam.gserviceaccount.com"
 ```
 
 3. create a workload identity pool and provider

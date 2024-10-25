@@ -8,7 +8,6 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	_ "embed"
-	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -19,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"cloud.google.com/go/auth"
+	"cloud.google.com/go/auth/credentials/externalaccount"
 	"cloud.google.com/go/storage"
 	"github.com/110y/run"
 	"github.com/110y/servergroup"
@@ -104,6 +105,7 @@ func NewServer(port int, e *env.Environments) *Server {
 	mux.HandleFunc("/.well-known/openid-configuration", s.openidConfiguration)
 	mux.HandleFunc("/jwks.json", s.jwks)
 	mux.HandleFunc("/gcs/buckets", s.listGCSBuckets)
+	mux.HandleFunc("/gcs/buckets-sdk", s.listGCSBucketsBySDK)
 	s.server.Handler = mux
 
 	return s
@@ -179,15 +181,6 @@ func (s *Server) jwks(w http.ResponseWriter, r *http.Request) {
 //go:embed credentials/service-account.json
 var serviceAccountJSON []byte
 
-func decodeAccessToken(token string) {
-	// トークンの最初の . までの部分を取得
-	parts := strings.Split(token, ".")
-	if len(parts) > 1 {
-		decoded, _ := base64.RawURLEncoding.DecodeString(parts[1])
-		log.Printf("Access Token Payload: %s", string(decoded))
-	}
-}
-
 func (s *Server) listGCSBuckets(w http.ResponseWriter, r *http.Request) {
 	token, err := s.getToken()
 	if err != nil {
@@ -229,6 +222,74 @@ func (s *Server) listGCSBuckets(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Failed to encode response: %v", err), http.StatusInternalServerError)
 		return
 	}
+}
+
+func (s *Server) listGCSBucketsBySDK(w http.ResponseWriter, r *http.Request) {
+	creds, err := GetCredentials(s.env.WorkloadIdentityFederationAUD, s.env.WorkloadIdentityFederationIssuerURL, s.env.WorkloadIdentityFederationServiceAccount)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to get credentials: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	client, err := storage.NewClient(r.Context(), option.WithAuthCredentials(creds))
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to create storage client: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer client.Close()
+
+	var buckets []string
+	it := client.Buckets(r.Context(), s.env.GoogleCloudProject)
+	for {
+		bucketAttrs, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to list buckets: %v", err), http.StatusInternalServerError)
+			return
+		}
+		buckets = append(buckets, bucketAttrs.Name)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(map[string][]string{"buckets": buckets}); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to encode response: %v", err), http.StatusInternalServerError)
+		return
+	}
+}
+
+type subjectTokenProvider struct {
+	aud     string
+	issuer  string
+	subject string
+}
+
+func (p *subjectTokenProvider) SubjectToken(ctx context.Context, opts *externalaccount.RequestOptions) (string, error) {
+	return generateIDToken(p.aud, p.subject, p.issuer)
+}
+
+func GetCredentials(aud, issuer, sub string) (*auth.Credentials, error) {
+	tokenProvider := &subjectTokenProvider{
+		aud:     aud,
+		issuer:  issuer,
+		subject: sub,
+	}
+
+	opts := &externalaccount.Options{
+		Audience:             aud,
+		SubjectTokenType:     "urn:ietf:params:oauth:token-type:jwt",
+		TokenURL:             "https://sts.googleapis.com/v1/token",
+		Scopes:               []string{"https://www.googleapis.com/auth/cloud-platform"},
+		SubjectTokenProvider: tokenProvider,
+	}
+
+	creds, err := externalaccount.NewCredentials(opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create credentials: %v", err)
+	}
+
+	return creds, nil
 }
 
 type TokenResponse struct {

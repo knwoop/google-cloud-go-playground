@@ -71,6 +71,14 @@ $ gcloud iam service-accounts add-iam-policy-binding "${SERVICE_ACCOUNT_FOR_WORK
   --member="principal://iam.googleapis.com/${WORKLOAD_IDENTITY_FEDERATION_POOL_ID}/subject/${SERVICE_ACCOUNT_FOR_WORKLOAD_IDENTITY}@${GOOGLE_CLOUD_PROJECT}.iam.gserviceaccount.com"
 ```
 
+if you want to use Direct Workload Identity Federation, you can skip set sa as impersonated user
+    run the below command instead
+``` shell
+$ gcloud projects add-iam-policy-binding "${GOOGLE_CLOUD_PROJECT}" \
+    --member="principal://iam.googleapis.com/${WORKLOAD_IDENTITY_FEDERATION_POOL_ID}/subject/${SERVICE_ACCOUNT_FOR_WORKLOAD_IDENTITY}@${GOOGLE_CLOUD_PROJECT}.iam.gserviceaccount.com" \
+    --role="roles/storage.objectViewer"
+```
+
 ### Note
 delete jwks
 

@@ -313,6 +313,8 @@ func (s *Server) getToken() (string, error) {
 		return "", fmt.Errorf("failed to exchange id token for google cloud access token: %w", err)
 	}
 
+	return googleToken, nil
+
 	saToken, err := generateServiceAccountToken(s.httpClient, googleToken, s.env.WorkloadIdentityFederationServiceAccount)
 	if err != nil {
 		return "", fmt.Errorf("failed to get service account token for google cloud access token: %w", err)

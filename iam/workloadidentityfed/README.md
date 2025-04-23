@@ -71,6 +71,15 @@ $ gcloud iam service-accounts add-iam-policy-binding "${SERVICE_ACCOUNT_FOR_WORK
   --member="principal://iam.googleapis.com/${WORKLOAD_IDENTITY_FEDERATION_POOL_ID}/subject/${SERVICE_ACCOUNT_FOR_WORKLOAD_IDENTITY}@${GOOGLE_CLOUD_PROJECT}.iam.gserviceaccount.com"
 ```
 
+6. Issue Signed URL
+6.1
+
+``` shell
+$ gcloud projects add-iam-policy-binding "${GOOGLE_CLOUD_PROJECT}" \
+  --member="serviceAccount:${SERVICE_ACCOUNT_FOR_WORKLOAD_IDENTITY}@${GOOGLE_CLOUD_PROJECT}.iam.gserviceaccount.com" \
+  --role="roles/iam.serviceAccountTokenCreator"
+```
+
 ### Note
 delete jwks
 

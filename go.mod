@@ -3,6 +3,7 @@ module github.com/knwoop/google-cloud-go-playground
 go 1.22.1
 
 require (
+	cloud.google.com/go/auth v0.6.1
 	cloud.google.com/go/kms v1.18.2
 	cloud.google.com/go/storage v1.41.0
 	github.com/110y/run v1.0.3
@@ -16,7 +17,6 @@ require (
 
 require (
 	cloud.google.com/go v0.115.0 // indirect
-	cloud.google.com/go/auth v0.6.1 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.2 // indirect
 	cloud.google.com/go/compute/metadata v0.3.0 // indirect
 	cloud.google.com/go/iam v1.1.8 // indirect

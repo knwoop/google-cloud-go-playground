@@ -72,11 +72,10 @@ $ gcloud iam service-accounts add-iam-policy-binding "${SERVICE_ACCOUNT_FOR_WORK
 ```
 
 6. Issue Signed URL
-6.1
-
+6.1 Attach a Role to Issue Signed URLs with Workload Identity Federation
 ``` shell
-$ gcloud projects add-iam-policy-binding "${GOOGLE_CLOUD_PROJECT}" \
-  --member="serviceAccount:${SERVICE_ACCOUNT_FOR_WORKLOAD_IDENTITY}@${GOOGLE_CLOUD_PROJECT}.iam.gserviceaccount.com" \
+$ gcloud iam service-accounts add-iam-policy-binding "${SERVICE_ACCOUNT_FOR_WORKLOAD_IDENTITY}@${GOOGLE_CLOUD_PROJECT}.iam.gserviceaccount.com" \
+  --member="principal://iam.googleapis.com/${WORKLOAD_IDENTITY_FEDERATION_POOL_ID}/subject/${SERVICE_ACCOUNT_FOR_WORKLOAD_IDENTITY}@${GOOGLE_CLOUD_PROJECT}.iam.gserviceaccount.com" \
   --role="roles/iam.serviceAccountTokenCreator"
 ```
 

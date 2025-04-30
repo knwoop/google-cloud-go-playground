@@ -20,6 +20,9 @@ import (
 
 	"cloud.google.com/go/auth"
 	"cloud.google.com/go/auth/credentials/externalaccount"
+	"cloud.google.com/go/auth/oauth2adapt"
+	credentials "cloud.google.com/go/iam/credentials/apiv1"
+	"cloud.google.com/go/iam/credentials/apiv1/credentialspb"
 	"cloud.google.com/go/storage"
 	"github.com/110y/run"
 	"github.com/110y/servergroup"
@@ -106,6 +109,7 @@ func NewServer(port int, e *env.Environments) *Server {
 	mux.HandleFunc("/jwks.json", s.jwks)
 	mux.HandleFunc("/gcs/buckets", s.listGCSBuckets)
 	mux.HandleFunc("/gcs/buckets-sdk", s.listGCSBucketsBySDK)
+	mux.HandleFunc("/gcs/signed-url-sdk", s.signedURLGCSBucketsBySDK)
 	s.server.Handler = mux
 
 	return s
@@ -257,6 +261,64 @@ func (s *Server) listGCSBucketsBySDK(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Failed to encode response: %v", err), http.StatusInternalServerError)
 		return
 	}
+}
+
+func (s *Server) signedURLGCSBucketsBySDK(w http.ResponseWriter, r *http.Request) {
+	creds, err := GetCredentials(s.env.WorkloadIdentityFederationAUD, s.env.WorkloadIdentityFederationIssuerURL, s.env.WorkloadIdentityFederationServiceAccount)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to get credentials: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	client, err := storage.NewClient(r.Context(), option.WithAuthCredentials(creds))
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to create storage client: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer client.Close()
+
+	c := oauth2adapt.Oauth2CredentialsFromAuthCredentials(creds)
+	iamClient, err := credentials.NewIamCredentialsClient(r.Context(), option.WithCredentials(c))
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to create IAM client: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer iamClient.Close()
+
+	opts := &storage.SignedURLOptions{
+		Scheme:         storage.SigningSchemeV4,
+		Method:         "GET",                          // HTTP method
+		Expires:        time.Now().Add(48 * time.Hour), // URL expiration time
+		ContentType:    "application/octet-stream",
+		GoogleAccessID: "your-service-account-email@project-id.iam.gserviceaccount.com", // Your service account email
+		SignBytes: func(b []byte) ([]byte, error) {
+			req := &credentialspb.SignBlobRequest{
+				Name:    "projects/-/serviceAccounts/" + s.env.WorkloadIdentityFederationServiceAccount,
+				Payload: b,
+			}
+
+			resp, err := iamClient.SignBlob(r.Context(), req)
+			if err != nil {
+				return nil, fmt.Errorf("iamClient.SignBlob: %w", err)
+			}
+
+			return resp.SignedBlob, nil
+		},
+	}
+
+	bucketName := "test-knwoop-bucket"
+	objectName := "test-object.txt"
+	signedURL, err := storage.SignedURL(bucketName, objectName, opts)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to create signed URL: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(map[string]string{"signed_url": signedURL}); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to encode response: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 type subjectTokenProvider struct {
